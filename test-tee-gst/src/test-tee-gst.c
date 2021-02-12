@@ -72,8 +72,25 @@ static gboolean bus_call (GstBus     *bus,
   GMainLoop *loop = (*data).loop;
   GstElement *element = (*data).element;
 
-  GstState old_state, new_state, pending_state;
-  print_pad_capabilities (element, "src");
+//  guint64 running_time, stream_time;
+//
+//  GstState old_state, new_state, pending_state;
+//  print_pad_capabilities (element, "sink");
+//  gst_message_parse_qos(msg, NULL, &running_time, &stream_time, NULL, NULL);
+//  gint64 current = -1;
+//  g_print("%" G_GUINT64_FORMAT "\n", msg->timestamp);
+//  g_print("%" G_GUINT64_FORMAT "\n", running_time);
+//  g_print("%" G_GUINT64_FORMAT "\n", stream_time);
+//
+//  if (!gst_element_query_position (element, GST_FORMAT_TIME, &current)) {
+//	g_printerr ("Could not query current position.\n");
+//  }
+//
+//  g_print ("Position %" GST_TIME_FORMAT "/ %d \n",
+//              GST_TIME_ARGS (current), GST_MESSAGE_TYPE (msg));
+  gint64 current = -1;
+
+
 
   switch (GST_MESSAGE_TYPE (msg)) {
 
@@ -95,7 +112,13 @@ static gboolean bus_call (GstBus     *bus,
       g_main_loop_quit (loop);
       break;
     }
-    case GST_MESSAGE_STREAM_STATUS:
+    case GST_MESSAGE_ELEMENT:
+    	if (!gst_element_query_position (element, GST_FORMAT_TIME, &current)) {
+    		g_printerr ("Could not query current position.\n");
+    	  }
+    	print_pad_capabilities (element, "sink");
+		g_print ("Position %" GST_TIME_FORMAT "/ %d \n",
+    	              GST_TIME_ARGS (current), GST_MESSAGE_TYPE (msg));
     	break;
     case GST_MESSAGE_LATENCY:
     	break;
@@ -105,13 +128,13 @@ static gboolean bus_call (GstBus     *bus,
     	break;
     case GST_MESSAGE_HAVE_CONTEXT:
     	break;
-	case GST_MESSAGE_STATE_CHANGED:
-	  /* We are only interested in state-changed messages from the pipeline */
-		gst_message_parse_state_changed (msg, &old_state, &new_state, &pending_state);
-		g_print ("\nPipeline state changed from %s to %s:\n",
-		gst_element_state_get_name (old_state), gst_element_state_get_name (new_state));
-		/* Print the current capabilities of the sink element */
-	  break;
+//	case GST_MESSAGE_STATE_CHANGED:
+//	  /* We are only interested in state-changed messages from the pipeline */
+//		gst_message_parse_state_changed (msg, &old_state, &new_state, &pending_state);
+//		g_print ("\nPipeline state changed from %s to %s:\n",
+//		gst_element_state_get_name (old_state), gst_element_state_get_name (new_state));
+//		/* Print the current capabilities of the sink element */
+//	  break;
     default:
       break;
   }
@@ -160,8 +183,9 @@ on_pad_added (GstElement *element,
 
 int main(int   argc, char *argv[]) {
 
-	GstElement *pipeline, *filesrc, *flvdemux, *h264parse, *h264parse2, *nvh264dec, *nvh264enc, *flvmux, *filesink;
+	GstElement *pipeline, *filesrc, *flvdemux, *h264parse, *videorate, *capsfilter, *nvh264dec, *cudadownload, *jpegenc, *multifilesink;
 	GstStateChangeReturn ret;
+	GstCaps *filtercaps;
 	gst_init(&argc, &argv);
 
 	pipeline = gst_pipeline_new ("audio-player");
@@ -169,20 +193,26 @@ int main(int   argc, char *argv[]) {
 	flvdemux   = gst_element_factory_make ("flvdemux",       "demux");
 	h264parse   = gst_element_factory_make ("h264parse",       "h264parse");
 	nvh264dec   = gst_element_factory_make ("nvh264dec",       "nvh264dec");
-	nvh264enc   = gst_element_factory_make ("nvh264enc",       "nvh264enc");
-	h264parse2   = gst_element_factory_make ("h264parse",       "h264parse2");
-	flvmux   = gst_element_factory_make ("flvmux",       "flvmux");
-	filesink  = gst_element_factory_make ("filesink",      "sink");
+	cudadownload   = gst_element_factory_make ("cudadownload",       "cudadownload");
+	videorate   = gst_element_factory_make ("videorate",       "videorate");
+	capsfilter   = gst_element_factory_make ("capsfilter",       "capsfilter");
+	jpegenc   = gst_element_factory_make ("jpegenc",       "jpegenc");
+	multifilesink  = gst_element_factory_make ("multifilesink",      "multifilesink");
 
-	if (!pipeline || !filesrc || !filesink) {
+	if (!pipeline || !filesrc || !multifilesink) {
 	    g_printerr ("One element could not be created. Exiting.\n");
 	    return -1;
 	  }
 
 
+	filtercaps = gst_caps_new_simple ("video/x-raw",
+            "framerate", GST_TYPE_FRACTION, 1, 5,
+            NULL);
 
 	g_object_set (G_OBJECT (filesrc), "location", argv[1], NULL);
-	g_object_set (G_OBJECT (filesink), "location", "aaa5.flv", NULL);
+	g_object_set (G_OBJECT (multifilesink), "location", "aaa5_%d.jpg", NULL);
+	g_object_set (G_OBJECT (capsfilter), "caps", filtercaps, NULL);
+	g_object_set (G_OBJECT (multifilesink), "post-messages", TRUE, NULL);
 
 	GstBus *bus;
 	GMainLoop *loop;
@@ -191,7 +221,7 @@ int main(int   argc, char *argv[]) {
 
 
 	gst_bin_add_many (GST_BIN (pipeline),
-			filesrc, flvdemux, h264parse, nvh264dec, nvh264enc, h264parse2, flvmux, filesink, NULL);
+			filesrc, flvdemux, h264parse, nvh264dec, cudadownload, videorate, capsfilter, jpegenc, multifilesink, NULL);
 
 
 	if (gst_element_link (filesrc, flvdemux) != TRUE) {
@@ -200,7 +230,7 @@ int main(int   argc, char *argv[]) {
 		return -1;
 	}
 
-	if (gst_element_link_many (h264parse, nvh264dec, nvh264enc, h264parse2, flvmux, filesink, NULL) != TRUE) {
+	if (gst_element_link_many (h264parse, nvh264dec, cudadownload, videorate, capsfilter, jpegenc, multifilesink, NULL) != TRUE) {
 		g_printerr ("Elements could not be linked2.\n");
 		gst_object_unref (pipeline);
 		return -1;
@@ -223,7 +253,7 @@ int main(int   argc, char *argv[]) {
 
 	g_print ("Running...\n");
 //	g_main_loop_run (loop);
-	UserData user_data = {loop, nvh264enc};
+	UserData user_data = {loop, jpegenc};
 	/* we add a message handler */
 	bus = gst_pipeline_get_bus (GST_PIPELINE (pipeline));
 	gst_bus_add_signal_watch (bus);
